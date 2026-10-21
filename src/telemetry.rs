@@ -270,7 +270,7 @@ pub(crate) struct Kozmos {
     draft: String,
 }
 
-// Render the planetary limb once. Animation uses a separate, inexpensive star layer.
+// Cache the planetary texture; animate its camera and lightweight foreground geometry.
 fn space_image() -> egui::ColorImage {
     let (w, h) = (1440, 600);
     let mut pixels = Vec::with_capacity(w * h);
@@ -694,34 +694,89 @@ impl Kozmos {
             ui.label(egui::RichText::new(warning).size(11.0).color(THEMES[2]));
         }
     }
+    fn paint_space(&self, painter: &egui::Painter, r: Rect) {
+        let t = self.animation_time;
+        // Overscan keeps the frame filled while the camera drifts over the horizon.
+        let zoom = 0.91 + 0.015 * (t * 0.12).sin();
+        let offset = Vec2::new(
+            0.045 + 0.024 * (t * 0.09).sin(),
+            0.045 + 0.018 * (t * 0.13).cos(),
+        );
+        painter.image(
+            self.space.id(),
+            r,
+            Rect::from_min_size(Pos2::new(offset.x, offset.y), Vec2::splat(zoom)),
+            Color32::WHITE,
+        );
+        for i in 0..220 {
+            let seed = i as f32;
+            let depth = (i % 4) as f32 / 3.0;
+            let x = (((i * 137 + 29) % 997) as f32 / 997.0 + t * (0.002 + depth * 0.003)).fract();
+            let y = (((i * 233 + 19) % 991) as f32 / 991.0 + 0.008 * (t * 0.18 + seed).sin())
+                .rem_euclid(1.0);
+            // Match the texture's sphere silhouette so stars remain behind the planet.
+            let u = offset.x + x * zoom;
+            let v = offset.y + y * zoom;
+            let radius = (((u - 0.79) * 2.4).powi(2) + (v - 1.72).powi(2)).sqrt();
+            let visibility = ((radius - 1.24) * 18.0).clamp(0.0, 1.0);
+            let alpha =
+                ((115.0 + 65.0 * (seed + t * (0.65 + depth * 0.25)).sin()) * visibility) as u8;
+            let p = r.min + Vec2::new(x * r.width(), y * r.height());
+            if i % 17 == 0 {
+                painter.circle_filled(
+                    p,
+                    3.0,
+                    Color32::from_rgba_unmultiplied(145, 193, 255, alpha / 8),
+                );
+            }
+            painter.circle_filled(
+                p,
+                0.5 + depth * 0.8,
+                Color32::from_rgba_unmultiplied(193, 215, 244, alpha),
+            );
+        }
+        // A short, fading meteor pass every twelve seconds, confined to the upper sky.
+        let phase = (t + 2.0).rem_euclid(12.0);
+        if phase < 1.6 {
+            let progress = phase / 1.6;
+            let opacity = (progress * std::f32::consts::PI).sin();
+            let head = r.min
+                + Vec2::new(
+                    r.width() * (0.38 + progress * 0.45),
+                    r.height() * (0.09 + progress * 0.22),
+                );
+            let tail = Vec2::new(r.width() * 0.10, r.height() * 0.049);
+            for segment in 0..18 {
+                let fraction = segment as f32 / 18.0;
+                painter.line_segment(
+                    [
+                        head - tail * fraction,
+                        head - tail * ((segment + 1) as f32 / 18.0),
+                    ],
+                    Stroke::new(
+                        1.2_f32,
+                        Color32::from_rgba_unmultiplied(
+                            179,
+                            216,
+                            255,
+                            (opacity * (1.0 - fraction).powi(2) * 180.0) as u8,
+                        ),
+                    ),
+                );
+            }
+            painter.circle_filled(
+                head,
+                1.5,
+                Color32::from_white_alpha((opacity * 220.0) as u8),
+            );
+        }
+    }
     fn banner(&mut self, ui: &mut egui::Ui, name: &mut String) -> bool {
         let width = ui.available_width();
         let height = (width * 0.42).clamp(300.0, 480.0);
         let (r, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         let painter = ui.painter().with_clip_rect(r);
-        painter.image(
-            self.space.id(),
-            r,
-            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-            Color32::WHITE,
-        );
-        for i in 0..170 {
-            let seed = i as f32;
-            let x = ((i * 137 + 29) % 997) as f32 / 997.0;
-            let y = ((i * 233 + 19) % 991) as f32 / 991.0;
-            if y > 0.64 && x > 0.4 {
-                continue;
-            }
-            let drift = self.animation_time * (0.0005 + (i % 3) as f32 * 0.0002);
-            let p = r.min + Vec2::new((x + drift).fract() * r.width(), y * r.height());
-            let alpha = (95.0 + 60.0 * (seed + self.animation_time * 0.45).sin()) as u8;
-            let radius = if i % 13 == 0 { 1.25 } else { 0.65 };
-            painter.circle_filled(
-                p,
-                radius,
-                Color32::from_rgba_unmultiplied(193, 215, 244, alpha),
-            );
-        }
+        self.paint_space(&painter, r);
         painter.text(
             r.min + Vec2::new(32.0, 26.0),
             Align2::LEFT_TOP,

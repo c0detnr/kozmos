@@ -29,7 +29,8 @@ Derlenmiş uygulama: `./target/debug/kozmos`
 - Ayrı alt bölümde bilgisayar ve donanım bilgileri
 - Her saniye güncellenen gerçek CPU, RAM, ağ ve sistem çalışma süresi
 - Son 90 örneğin işlemci ve bellek grafikleri
-- Tam genişlikte gezegen ufku ve hareketli yıldız bannerı
+- Tam genişlikte animasyonlu uzay bannerı: hareketli gezegen ufku, derinlik katmanlı yıldızlar ve aralıklı meteor geçişleri
+- Banner üzerindeki Duraklat/Hareket düğmesi tüm sahne animasyonunu durdurur/sürdürür
 - Banner üzerinde tıklanarak düzenlenen, proje bazında saklanan ad; Enter kaydeder, Escape iptal eder
 - Belleğe göre sıralanan ilk 6 süreç
 - Başlatma, duraklatma ve sıfırlama destekli 25 dakikalık odak sayacı
