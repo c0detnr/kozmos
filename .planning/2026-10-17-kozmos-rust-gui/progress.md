@@ -1,0 +1,4 @@
+# Progress
+Project initialized. Implementation underway.
+Implemented telemetry parsers, dashboard, custom orbital painter, processes, themes, CSV export and focus timer. Added parser tests and README. Initial fetch was attempted before main.rs existed; resolved by creating application target. First dependency build running.
+Validation: all 4 parser/interaction tests pass, clippy with -D warnings passes, rustfmt passes, desktop entry validates. Native Wayland window opened successfully. Captured and inspected dashboard; replaced unsupported arrow/bullet glyphs. Real keyboard E generated CSV with 30 samples in home directory. Application runs as transient user service kozmos-gui (no autostart). Fixed Clippy iterator warning. Older Hyprland dispatcher syntax failed; inspected installed Lua examples and official documentation and used hl.dsp successfully.
