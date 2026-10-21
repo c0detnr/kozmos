@@ -98,11 +98,15 @@ impl AgentOs {
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".config"));
         let mut ws = Workspace::new(home, config.join("kozmos/workspaces.json"));
-        if ws.settings.projects.is_empty()
-            && let Ok(cwd) = std::env::current_dir()
-        {
-            let _ = ws.add_project(&cwd.to_string_lossy());
-        }
+        let startup_project = std::env::args_os().nth(1).map(PathBuf::from).or_else(|| {
+            ws.settings
+                .projects
+                .is_empty()
+                .then(|| std::env::current_dir().ok())
+                .flatten()
+        });
+        let startup_error =
+            startup_project.and_then(|path| ws.add_project(&path.to_string_lossy()).err());
         Self {
             ws,
             page: Page::Overview,
@@ -113,8 +117,9 @@ impl AgentOs {
             source_kind: Kind::Skill,
             editor: None,
             create: None,
-            message: "Yerel envanter hazır. Kaynaklar cihazından okunuyor.".into(),
-            failed: false,
+            failed: startup_error.is_some(),
+            message: startup_error
+                .unwrap_or_else(|| "Yerel envanter hazır. Kaynaklar cihazından okunuyor.".into()),
             telemetry: telemetry::Kozmos::new(ctx),
             mcp_tests: mcp_ui::Panel::default(),
         }
@@ -160,6 +165,100 @@ impl AgentOs {
             provider: "Claude".into(),
         });
     }
+    fn activate_project(&mut self, path: &str) -> bool {
+        if self.editor.as_ref().is_some_and(Editor::dirty) {
+            self.result::<()>(
+                Err("Önce açık dosyayı kaydedin veya değişiklikleri bırakın.".into()),
+                "",
+            );
+            return false;
+        }
+        let result = self.ws.add_project(path);
+        let activated = result.is_ok();
+        if activated {
+            self.editor = None;
+            self.create = None;
+        }
+        self.result(result, "Aktif proje değiştirildi.");
+        activated
+    }
+
+    fn project_selector(&mut self, ui: &mut egui::Ui) {
+        let active = self.ws.settings.active.clone();
+        let name = active
+            .as_ref()
+            .map(|path| {
+                path.file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_else(|| "Proje seç".into());
+        let response = ui.add_sized(
+            [ui.available_width(), 36.0],
+            egui::Button::new(RichText::new(&name).size(12.0))
+                .truncate()
+                .right_text(RichText::new("⌄").color(MUTED))
+                .fill(BG)
+                .stroke(egui::Stroke::new(1.0_f32, LINE))
+                .corner_radius(7),
+        );
+        let response = response.on_hover_text(
+            active
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "Proje seç".into()),
+        );
+        egui::Popup::menu(&response).width(300.0).show(|ui| {
+            ui.label(RichText::new("Son projeler").size(11.0).color(MUTED));
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical()
+                .max_height(300.0)
+                .show(ui, |ui| {
+                    if self.ws.settings.projects.is_empty() {
+                        ui.label(RichText::new("Henüz proje açılmadı.").color(MUTED));
+                    }
+                    for path in self.ws.settings.projects.clone() {
+                        let selected = active.as_ref() == Some(&path);
+                        let name = path
+                            .file_name()
+                            .unwrap_or(path.as_os_str())
+                            .to_string_lossy();
+                        let available = path.is_dir();
+                        let label = format!(
+                            "{}{}\n{}",
+                            if selected { "✓  " } else { "" },
+                            name,
+                            path.display()
+                        );
+                        let row = ui.add_enabled(
+                            available,
+                            egui::Button::new(RichText::new(label).size(12.0))
+                                .selected(selected)
+                                .min_size(Vec2::new(ui.available_width(), 48.0))
+                                .truncate(),
+                        );
+                        let row = row.on_hover_text(if available {
+                            path.display().to_string()
+                        } else {
+                            format!("Klasör bulunamadı: {}", path.display())
+                        });
+                        if row.clicked() {
+                            if !selected {
+                                self.activate_project(&path.to_string_lossy());
+                            }
+                            ui.close();
+                        }
+                    }
+                });
+            ui.separator();
+            if ui.button("+ Proje aç…").clicked() {
+                self.page = Page::Projects;
+                ui.close();
+            }
+        });
+    }
+
     fn sidebar(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("navigation")
             .exact_width(218.0)
@@ -167,7 +266,9 @@ impl AgentOs {
             .show(ctx, |ui| {
                 ui.add_space(8.0);
                 brand::sidebar_logo(ui);
-                ui.add_space(30.0);
+                ui.add_space(14.0);
+                self.project_selector(ui);
+                ui.add_space(24.0);
                 ui.label(RichText::new("WORKSPACE").size(10.0).color(MUTED));
                 for (page, label) in [
                     (Page::Overview, "01   Kontrol merkezi"),
@@ -407,12 +508,10 @@ impl AgentOs {
                     .hint_text("~/Projects/projem")
                     .desired_width(400.0),
             );
-            if ui.button("+ Proje ekle").clicked() {
-                let result = self.ws.add_project(&self.project_input);
-                if result.is_ok() {
-                    self.project_input.clear();
-                }
-                self.result(result, "Proje eklendi ve etkinleştirildi.");
+            if ui.button("+ Proje ekle").clicked()
+                && self.activate_project(&self.project_input.clone())
+            {
+                self.project_input.clear();
             }
         });
         ui.add_space(18.0);
@@ -432,9 +531,7 @@ impl AgentOs {
                         if self.ws.settings.active.as_ref() == Some(&path) {
                             ui.colored_label(ACCENT, "AKTİF");
                         } else if ui.button("Etkinleştir").clicked() {
-                            self.ws.settings.active = Some(path.clone());
-                            let result = self.ws.save_settings();
-                            self.result(result, "Aktif proje değiştirildi.");
+                            self.activate_project(&path.to_string_lossy());
                         }
                         if ui
                             .small_button("Listeden çıkar")

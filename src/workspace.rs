@@ -97,11 +97,14 @@ impl Workspace {
         if !path.is_dir() {
             return Err("Bir proje klasörü seçin.".into());
         }
-        if !self.settings.projects.contains(&path) {
-            self.settings.projects.push(path.clone());
-        }
+        let previous = self.settings.clone();
+        self.settings.projects.retain(|project| project != &path);
+        self.settings.projects.insert(0, path.clone());
         self.settings.active = Some(path);
-        self.save_settings()?;
+        if let Err(error) = self.save_settings() {
+            self.settings = previous;
+            return Err(error);
+        }
         self.refresh();
         Ok(())
     }
@@ -590,6 +593,40 @@ mod tests {
         let ws = Workspace::new(home, temp.path().join("state/workspaces.json"));
         (temp, ws)
     }
+    #[test]
+    fn recent_projects_reorder_without_duplicates_and_survive_restart() {
+        let (temp, mut ws) = fixture();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        ws.add_project(first.to_str().unwrap()).unwrap();
+        ws.add_project(second.to_str().unwrap()).unwrap();
+        ws.add_project(first.join(".").to_str().unwrap()).unwrap();
+        let loaded = Workspace::new(ws.home.clone(), ws.state_path.clone());
+        assert_eq!(loaded.settings.projects, vec![first.clone(), second]);
+        assert_eq!(loaded.settings.active, Some(first));
+    }
+
+    #[test]
+    fn failed_project_open_preserves_active_project_and_recent_order() {
+        let (temp, mut ws) = fixture();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        ws.add_project(first.to_str().unwrap()).unwrap();
+        assert!(
+            ws.add_project(temp.path().join("missing").to_str().unwrap())
+                .is_err()
+        );
+        // Simulate a concurrent registry edit; failed persistence must not switch scope.
+        fs::write(&ws.state_path, "{}").unwrap();
+        assert!(ws.add_project(second.to_str().unwrap()).is_err());
+        assert_eq!(ws.settings.projects, vec![first.clone()]);
+        assert_eq!(ws.settings.active, Some(first));
+    }
+
     #[test]
     fn discovery_separates_scopes_and_finds_plugins_and_agent_files() {
         let (temp, mut ws) = fixture();

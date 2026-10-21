@@ -10,6 +10,8 @@ cargo run --locked
 
 Derlenmiş uygulama: `./target/debug/kozmos`
 
+Geçerli klasörü açmak için `cargo run --locked -- .` veya `kozmos .` kullanın (ikili PATH içindeyse). Başka bir proje için klasör yolunu argüman olarak verin. Logonun altındaki proje seçici, kayıtlı projeleri son açılma sırasıyla gösterir; seçim uygulama yeniden açıldığında korunur.
+
 ## MCP bağlantı testi
 
 **MCP bağlantıları → yapılandırma kartında Bağlantı testi → sunucuda Test et** yolunu izle.
