@@ -1,3 +1,4 @@
+mod brand;
 mod mcp;
 mod mcp_ui;
 mod telemetry;
@@ -165,13 +166,7 @@ impl AgentOs {
             .frame(egui::Frame::new().fill(PANEL).inner_margin(20))
             .show(ctx, |ui| {
                 ui.add_space(8.0);
-                ui.label(
-                    RichText::new("K O Z M O S")
-                        .size(24.0)
-                        .strong()
-                        .color(ACCENT),
-                );
-                ui.label(RichText::new("AGENT OS  /  0.2").size(11.0).color(MUTED));
+                brand::sidebar_logo(ui);
                 ui.add_space(30.0);
                 ui.label(RichText::new("WORKSPACE").size(10.0).color(MUTED));
                 for (page, label) in [
@@ -204,31 +199,13 @@ impl AgentOs {
                 {
                     self.page = Page::System;
                 }
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.label(
-                        RichText::new("Yapılandırma kontrol düzlemi")
-                            .size(11.0)
-                            .color(MUTED),
-                    );
-                    ui.label(RichText::new("●  LOCAL FIRST").size(11.0).color(ACCENT));
-                    ui.separator();
-                    if let Some(path) = &self.ws.settings.active {
-                        ui.label(
-                            RichText::new(path.file_name().unwrap_or_default().to_string_lossy())
-                                .strong(),
-                        );
-                        ui.label(RichText::new("AKTİF PROJE").size(10.0).color(MUTED));
-                    }
-                });
             });
     }
     fn overview(&mut self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         egui::Frame::new().fill(PANEL).corner_radius(16).inner_margin(24).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.label(RichText::new("AGENT WORKSPACE / YEREL KONTROL").color(ACCENT).size(11.0));
-            ui.add_space(12.0);
-            ui.label(RichText::new("Agent ekosistemin, tek merkezde.").size(29.0).strong());
+            ui.label(RichText::new("Çalışma alanı").size(29.0).strong());
             ui.label(RichText::new("Skill paketlerini, MCP bağlantılarını ve agent talimatlarını global veya proje kapsamında yönet.").color(MUTED));
             ui.add_space(12.0);
             if ui.button("Proje yönetimine git  →").clicked() { self.page = Page::Projects; }
@@ -687,11 +664,6 @@ impl AgentOs {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("KOZMOS / AGENT OPERATING SYSTEM")
-                                .size(10.0)
-                                .color(MUTED),
-                        );
                         ui.label(RichText::new(self.page.title()).size(26.0).strong());
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -770,7 +742,7 @@ impl eframe::App for AgentOs {
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Kozmos · Agent OS")
+            .with_title("Kozmos")
             .with_inner_size([1440.0, 920.0])
             .with_min_inner_size([1050.0, 700.0])
             .with_app_id("dev.kozmos.dashboard"),
