@@ -279,10 +279,9 @@ async fn connect(server: &Server, child: &mut Option<Process>) -> Result<Details
             .process_group(0);
         if let Some(cwd) = c.get("cwd") {
             let raw = expand(cwd.as_str().ok_or("cwd metin olmalı.")?)?;
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default();
-            command.current_dir(server.cwd.join(crate::workspace::expand_path(&raw, &home)));
+            let cwd = server.cwd.join(raw);
+            crate::workspace::check_path(&server.cwd, &cwd)?;
+            command.current_dir(cwd);
         }
         let process = command.spawn().map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => {
@@ -412,6 +411,25 @@ mod tests {
         assert_eq!(details.tools[0].1, "environment-ok");
     }
     #[tokio::test]
+    async fn stdio_working_directory_stays_inside_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(root.join("nested")).unwrap();
+        std::os::unix::fs::symlink(dir.path(), root.join("outside")).unwrap();
+        for cwd in ["..", "outside", "/tmp"] {
+            let mut server = fixture("normal");
+            server.cwd = root.clone();
+            server.config["cwd"] = json!(cwd);
+            let error = test_probe(server).await.outcome.err().unwrap();
+            assert!(error.contains("çalışma dizininin dışında"), "{error}");
+        }
+        let mut server = fixture("normal");
+        server.cwd = root;
+        server.config["cwd"] = json!("nested");
+        assert!(test_probe(server).await.outcome.is_ok());
+    }
+    #[tokio::test]
     async fn no_tools_capability_is_successful() {
         let details = test_probe(fixture("no-tools")).await.outcome.unwrap();
         assert!(!details.supports_tools);
@@ -489,9 +507,9 @@ mod tests {
         let pids: Vec<u32> =
             serde_json::from_str(&std::fs::read_to_string(pids_file).unwrap()).unwrap();
         for pid in pids {
-            // A killed orphan may briefly remain a zombie until its parent reaps it.
+            // A killed process may be dead or a zombie before /proc removes it.
             if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-                assert_eq!(stat.split_whitespace().nth(2), Some("Z"));
+                assert!(matches!(stat.split_whitespace().nth(2), Some("Z" | "X")));
             }
         }
     }

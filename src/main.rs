@@ -5,7 +5,7 @@ mod telemetry;
 mod workspace;
 
 use eframe::egui::{self, Color32, RichText, Vec2};
-use std::{path::PathBuf, time::Duration};
+use std::time::Duration;
 use workspace::{Kind, Resource, Workspace};
 
 const BG: Color32 = Color32::from_rgb(12, 16, 24);
@@ -21,7 +21,7 @@ enum Page {
     Skills,
     Mcp,
     Instructions,
-    Projects,
+    Project,
     System,
 }
 impl Page {
@@ -39,7 +39,7 @@ impl Page {
             Self::Skills => "Skill kütüphanesi",
             Self::Mcp => "MCP bağlantıları",
             Self::Instructions => "Agent talimatları",
-            Self::Projects => "Çalışma alanları",
+            Self::Project => "Proje",
             Self::System => "Proje dashboardı",
         }
     }
@@ -57,16 +57,13 @@ impl Editor {
 }
 struct Create {
     kind: Kind,
-    global: bool,
     name: String,
     provider: String,
 }
 struct AgentOs {
     ws: Workspace,
     page: Page,
-    scope: u8,
     search: String,
-    project_input: String,
     source_input: String,
     source_kind: Kind,
     editor: Option<Editor>,
@@ -77,7 +74,7 @@ struct AgentOs {
     mcp_tests: mcp_ui::Panel,
 }
 impl AgentOs {
-    fn new(ctx: &egui::Context) -> Self {
+    fn new(ctx: &egui::Context, ws: Workspace) -> Self {
         let mut style = (*ctx.style()).clone();
         style.visuals = egui::Visuals::dark();
         style.visuals.panel_fill = BG;
@@ -91,35 +88,16 @@ impl AgentOs {
         style.spacing.item_spacing = Vec2::new(10.0, 10.0);
         style.spacing.button_padding = Vec2::new(12.0, 8.0);
         ctx.set_style(style);
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".config"));
-        let mut ws = Workspace::new(home, config.join("kozmos/workspaces.json"));
-        let startup_project = std::env::args_os().nth(1).map(PathBuf::from).or_else(|| {
-            ws.settings
-                .projects
-                .is_empty()
-                .then(|| std::env::current_dir().ok())
-                .flatten()
-        });
-        let startup_error =
-            startup_project.and_then(|path| ws.add_project(&path.to_string_lossy()).err());
         Self {
             ws,
             page: Page::Overview,
-            scope: 0,
             search: String::new(),
-            project_input: String::new(),
             source_input: String::new(),
             source_kind: Kind::Skill,
             editor: None,
             create: None,
-            failed: startup_error.is_some(),
-            message: startup_error
-                .unwrap_or_else(|| "Yerel envanter hazır. Kaynaklar cihazından okunuyor.".into()),
+            failed: false,
+            message: "Proje kaynakları hazır.".into(),
             telemetry: telemetry::Kozmos::new(ctx),
             mcp_tests: mcp_ui::Panel::default(),
         }
@@ -145,7 +123,11 @@ impl AgentOs {
             );
             return;
         }
-        match workspace::read_document(&resource.path) {
+        match self
+            .ws
+            .check_path(&resource.path)
+            .and_then(|()| workspace::read_document(&resource.path))
+        {
             Ok(content) => {
                 self.editor = Some(Editor {
                     resource,
@@ -160,103 +142,21 @@ impl AgentOs {
     fn new_resource(&mut self, kind: Kind) {
         self.create = Some(Create {
             kind,
-            global: self.scope != 2,
             name: String::new(),
             provider: "Claude".into(),
         });
     }
-    fn activate_project(&mut self, path: &str) -> bool {
-        if self.editor.as_ref().is_some_and(Editor::dirty) {
-            self.result::<()>(
-                Err("Önce açık dosyayı kaydedin veya değişiklikleri bırakın.".into()),
-                "",
-            );
-            return false;
-        }
-        let result = self.ws.add_project(path);
-        let activated = result.is_ok();
-        if activated {
-            self.editor = None;
-            self.create = None;
-        }
-        self.result(result, "Aktif proje değiştirildi.");
-        activated
-    }
-
-    fn project_selector(&mut self, ui: &mut egui::Ui) {
-        let active = self.ws.settings.active.clone();
-        let name = active
-            .as_ref()
-            .map(|path| {
-                path.file_name()
-                    .unwrap_or(path.as_os_str())
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .unwrap_or_else(|| "Proje seç".into());
-        let response = ui.add_sized(
+    fn project_identity(&self, ui: &mut egui::Ui) {
+        let path = self.ws.root();
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy();
+        ui.add_sized(
             [ui.available_width(), 36.0],
-            egui::Button::new(RichText::new(&name).size(12.0))
-                .truncate()
-                .right_text(RichText::new("⌄").color(MUTED))
-                .fill(BG)
-                .stroke(egui::Stroke::new(1.0_f32, LINE))
-                .corner_radius(7),
-        );
-        let response = response.on_hover_text(
-            active
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "Proje seç".into()),
-        );
-        egui::Popup::menu(&response).width(300.0).show(|ui| {
-            ui.label(RichText::new("Son projeler").size(11.0).color(MUTED));
-            ui.add_space(4.0);
-            egui::ScrollArea::vertical()
-                .max_height(300.0)
-                .show(ui, |ui| {
-                    if self.ws.settings.projects.is_empty() {
-                        ui.label(RichText::new("Henüz proje açılmadı.").color(MUTED));
-                    }
-                    for path in self.ws.settings.projects.clone() {
-                        let selected = active.as_ref() == Some(&path);
-                        let name = path
-                            .file_name()
-                            .unwrap_or(path.as_os_str())
-                            .to_string_lossy();
-                        let available = path.is_dir();
-                        let label = format!(
-                            "{}{}\n{}",
-                            if selected { "✓  " } else { "" },
-                            name,
-                            path.display()
-                        );
-                        let row = ui.add_enabled(
-                            available,
-                            egui::Button::new(RichText::new(label).size(12.0))
-                                .selected(selected)
-                                .min_size(Vec2::new(ui.available_width(), 48.0))
-                                .truncate(),
-                        );
-                        let row = row.on_hover_text(if available {
-                            path.display().to_string()
-                        } else {
-                            format!("Klasör bulunamadı: {}", path.display())
-                        });
-                        if row.clicked() {
-                            if !selected {
-                                self.activate_project(&path.to_string_lossy());
-                            }
-                            ui.close();
-                        }
-                    }
-                });
-            ui.separator();
-            if ui.button("+ Proje aç…").clicked() {
-                self.page = Page::Projects;
-                ui.close();
-            }
-        });
+            egui::Label::new(RichText::new(name).size(13.0).strong()).truncate(),
+        )
+        .on_hover_text(path.display().to_string());
     }
 
     fn sidebar(&mut self, ctx: &egui::Context) {
@@ -267,7 +167,7 @@ impl AgentOs {
                 ui.add_space(8.0);
                 brand::sidebar_logo(ui);
                 ui.add_space(14.0);
-                self.project_selector(ui);
+                self.project_identity(ui);
                 ui.add_space(24.0);
                 ui.label(RichText::new("WORKSPACE").size(10.0).color(MUTED));
                 for (page, label) in [
@@ -275,7 +175,7 @@ impl AgentOs {
                     (Page::Skills, "02   Skills"),
                     (Page::Mcp, "03   MCP sunucuları"),
                     (Page::Instructions, "04   Agent talimatları"),
-                    (Page::Projects, "05   Projeler"),
+                    (Page::Project, "05   Proje"),
                 ] {
                     if ui
                         .add_sized(
@@ -307,9 +207,9 @@ impl AgentOs {
         egui::Frame::new().fill(PANEL).corner_radius(16).inner_margin(24).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.label(RichText::new("Çalışma alanı").size(29.0).strong());
-            ui.label(RichText::new("Skill paketlerini, MCP bağlantılarını ve agent talimatlarını global veya proje kapsamında yönet.").color(MUTED));
+            ui.label(RichText::new("Bu dizindeki skill paketlerini, MCP bağlantılarını ve agent talimatlarını yönet.").color(MUTED));
             ui.add_space(12.0);
-            if ui.button("Proje yönetimine git  →").clicked() { self.page = Page::Projects; }
+            if ui.button("Proje bilgileri  →").clicked() { self.page = Page::Project; }
         });
         ui.add_space(18.0);
         ui.columns(3, |cols| {
@@ -347,19 +247,15 @@ impl AgentOs {
         });
         ui.add_space(24.0);
         ui.label(RichText::new("Kaynak haritası").size(19.0).strong());
-        ui.label(RichText::new("Global kaynaklar ve seçili projenin dosyaları birlikte taranır. MCP sunucuları yalnızca bağlantı testi başlatıldığında çalıştırılır.").color(MUTED));
+        ui.label(RichText::new("Kaynaklar yalnızca başlangıç dizininden okunur. MCP sunucuları bağlantı testi başlatıldığında çalıştırılır.").color(MUTED));
         for (title, detail) in [
-            (
-                "GLOBAL SKILLS",
-                "~/.agents/skills  ·  ~/.codex/skills  ·  ~/.claude/skills  ·  plugin paketleri",
-            ),
             (
                 "PROJE KAPSAMI",
                 ".agents/skills  ·  .claude/skills  ·  .codex/skills  ·  AGENTS.md  ·  .agents/**/*.md",
             ),
             (
                 "MCP CONFIG",
-                "Codex  ·  Claude Code & Desktop  ·  Cursor  ·  OpenCode",
+                "Codex  ·  Claude Code  ·  Cursor  ·  OpenCode",
             ),
         ] {
             ui.add_space(8.0);
@@ -387,9 +283,6 @@ impl AgentOs {
     }
     fn resources(&mut self, ui: &mut egui::Ui, kind: Kind) {
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.scope, 0, "Tümü");
-            ui.selectable_value(&mut self.scope, 1, "Global");
-            ui.selectable_value(&mut self.scope, 2, "Proje");
             ui.add(
                 egui::TextEdit::singleline(&mut self.search)
                     .hint_text("Ad, açıklama, sağlayıcı ara…")
@@ -407,7 +300,6 @@ impl AgentOs {
             .iter()
             .filter(|r| {
                 r.kind == kind
-                    && (self.scope == 0 || r.global == (self.scope == 1))
                     && format!(
                         "{} {} {} {}",
                         r.name,
@@ -431,7 +323,7 @@ impl AgentOs {
         if resources.is_empty() {
             ui.add_space(50.0);
             ui.label(RichText::new("Bu kapsamda kaynak bulunamadı.").size(23.0));
-            ui.label("Başka bir kapsam seçebilir veya yeni bir dosya oluşturabilirsin.");
+            ui.label("Yeni bir dosya oluşturabilirsin.");
         }
         for resource in resources {
             let selected = self
@@ -462,11 +354,7 @@ impl AgentOs {
                         {
                             self.open(resource.clone());
                         }
-                        ui.label(
-                            RichText::new(if resource.global { "GLOBAL" } else { "PROJE" })
-                                .size(10.0)
-                                .color(ACCENT),
-                        );
+                        ui.label(RichText::new("PROJE").size(10.0).color(ACCENT));
                         ui.label(RichText::new(&resource.provider).size(11.0).color(MUTED));
                         if !resource.enabled {
                             ui.colored_label(Color32::LIGHT_YELLOW, "Devre dışı");
@@ -480,7 +368,7 @@ impl AgentOs {
                             )
                             .clicked()
                     {
-                        let cwd = self.ws.settings.active.as_deref().unwrap_or(&self.ws.home);
+                        let cwd = self.ws.root();
                         self.mcp_tests.open(&resource.path, cwd);
                     }
                     ui.label(RichText::new(&resource.description).color(MUTED));
@@ -495,72 +383,20 @@ impl AgentOs {
         }
     }
     fn projects(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Çalışma dizini");
+        ui.label(RichText::new(self.ws.root().display().to_string()).monospace());
         ui.label(
-            RichText::new("Projelerini bağla, kapsamı seç.")
-                .size(23.0)
-                .strong(),
+            RichText::new("Başka bir proje için terminalde o dizine geçip kozmos çalıştırın.")
+                .color(MUTED),
         );
-        ui.label(RichText::new("Klasör yolu eklemek yalnızca Kozmos kaydını günceller. Agent dosyaları kaydettiğinde oluşturulur.").color(MUTED));
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.project_input)
-                    .hint_text("~/Projects/projem")
-                    .desired_width(400.0),
-            );
-            if ui.button("+ Proje ekle").clicked()
-                && self.activate_project(&self.project_input.clone())
-            {
-                self.project_input.clear();
-            }
-        });
-        ui.add_space(18.0);
-        for path in self.ws.settings.projects.clone() {
-            egui::Frame::new()
-                .fill(PANEL)
-                .corner_radius(12)
-                .inner_margin(20)
-                .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(path.file_name().unwrap_or_default().to_string_lossy())
-                                .size(20.0)
-                                .strong(),
-                        );
-                        if self.ws.settings.active.as_ref() == Some(&path) {
-                            ui.colored_label(ACCENT, "AKTİF");
-                        } else if ui.button("Etkinleştir").clicked() {
-                            self.activate_project(&path.to_string_lossy());
-                        }
-                        if ui
-                            .small_button("Listeden çıkar")
-                            .on_hover_text("Proje dosyaları silinmez")
-                            .clicked()
-                        {
-                            self.ws.settings.projects.retain(|p| p != &path);
-                            if self.ws.settings.active.as_ref() == Some(&path) {
-                                self.ws.settings.active =
-                                    self.ws.settings.projects.first().cloned();
-                            }
-                            let result = self.ws.save_settings();
-                            self.result(result, "Proje kayıttan çıkarıldı.");
-                        }
-                    });
-                    ui.label(
-                        RichText::new(path.to_string_lossy())
-                            .color(MUTED)
-                            .monospace(),
-                    );
-                    if !path.is_dir() {
-                        ui.colored_label(Color32::LIGHT_YELLOW, "Klasör bulunamadı");
-                    }
-                });
-            ui.add_space(10.0);
-        }
         ui.add_space(20.0);
         ui.heading("Özel kaynaklar");
-        ui.label(RichText::new("Standart konumların dışındaki skill klasörlerini, MCP dosyalarını ve talimatları envantere ekle.").color(MUTED));
+        ui.label(
+            RichText::new(
+                "Bu proje içindeki ek skill klasörlerini, MCP dosyalarını ve talimatları bağla.",
+            )
+            .color(MUTED),
+        );
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.source_kind, Kind::Skill, "Skill klasörü");
             ui.selectable_value(&mut self.source_kind, Kind::Mcp, "MCP dosyası");
@@ -569,7 +405,7 @@ impl AgentOs {
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.source_input)
-                    .hint_text("Dosya veya klasör yolu")
+                    .hint_text("Proje içindeki dosya veya klasör yolu")
                     .desired_width(360.0),
             );
             if ui.button("Kaynak bağla").clicked() {
@@ -607,7 +443,7 @@ impl AgentOs {
             if editor.resource.kind == Kind::Mcp { ui.label(RichText::new("Tam yapılandırma dosyası. Gizli değerler içeriyor olabilir; içerik yalnızca yerel düzenleyicide gösterilir.").size(11.0).color(MUTED)); }
             ui.horizontal_wrapped(|ui| {
                 if ui.button(RichText::new("Kaydet").color(ACCENT)).clicked() {
-                    let result = workspace::save_file(&editor.resource.path, editor.original.as_deref(), &editor.content, Some(editor.resource.kind));
+                    let result = self.ws.check_path(&editor.resource.path).and_then(|()| workspace::save_file(&editor.resource.path, editor.original.as_deref(), &editor.content, Some(editor.resource.kind)));
                     let success = match &result { Ok(backup) if editor.original.is_some() => format!("Kaydedildi. Yedek: {}", backup.display()), _ => "Yeni kaynak oluşturuldu.".into() };
                     if result.is_ok() { editor.original = Some(editor.content.clone()); }
                     self.result(result, &success);
@@ -619,10 +455,8 @@ impl AgentOs {
  if ui.button("Düzenlemeye dön").clicked() { editor.discard = false; } }); }
             if editor.resource.kind == Kind::Skill && editor.original.is_some() {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.add_enabled(!editor.dirty(), egui::Button::new(if editor.resource.enabled { "Devre dışı bırak" } else { "Etkinleştir" })).on_hover_text("SKILL.md dosyasını SKILL.md.disabled olarak yeniden adlandırır. Global değişiklik tüm projeleri etkiler.").clicked() {
-                        let result = workspace::toggle_skill(&editor.resource); if result.is_ok() { close = true; } self.result(result, "Skill durumu değiştirildi.");
-                    }
-                    if editor.resource.global && ui.add_enabled(self.ws.settings.active.is_some() && !editor.dirty(), egui::Button::new("Projeye kopyala")).clicked() && let Some(project) = &self.ws.settings.active { let result = workspace::install_skill(&editor.resource, project); self.result(result, "Skill tüm kaynak dosyalarıyla projeye kopyalandı.");
+                    if ui.add_enabled(!editor.dirty(), egui::Button::new(if editor.resource.enabled { "Devre dışı bırak" } else { "Etkinleştir" })).on_hover_text("SKILL.md dosyasını SKILL.md.disabled olarak yeniden adlandırır. Değişiklik bu projede uygulanır.").clicked() {
+                        let result = self.ws.check_path(&editor.resource.path).and_then(|()| workspace::toggle_skill(&editor.resource)); if result.is_ok() { close = true; } self.result(result, "Skill durumu değiştirildi.");
                     }
                 });
             }
@@ -647,10 +481,6 @@ impl AgentOs {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label(form.kind.label());
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut form.global, true, "Global");
-                    ui.selectable_value(&mut form.global, false, "Aktif proje");
-                });
                 if form.kind == Kind::Skill {
                     ui.add(egui::TextEdit::singleline(&mut form.name).hint_text("skill-adi"));
                 }
@@ -661,10 +491,7 @@ impl AgentOs {
                         }
                     });
                 }
-                match self
-                    .ws
-                    .target(form.kind, form.global, &form.name, &form.provider)
-                {
+                match self.ws.target(form.kind, false, &form.name, &form.provider) {
                     Ok(path) => {
                         ui.label(RichText::new(path.to_string_lossy()).monospace().size(11.0));
                         if path.exists() {
@@ -691,10 +518,7 @@ impl AgentOs {
                 self.create = Some(form);
                 return;
             }
-            if let Ok(path) = self
-                .ws
-                .target(form.kind, form.global, &form.name, &form.provider)
-            {
+            if let Ok(path) = self.ws.target(form.kind, false, &form.name, &form.provider) {
                 let resource = Resource {
                     name: if form.kind == Kind::Skill {
                         form.name.clone()
@@ -707,7 +531,7 @@ impl AgentOs {
                     description: String::new(),
                     path: path.clone(),
                     kind: form.kind,
-                    global: form.global,
+                    global: false,
                     provider: form.provider.clone(),
                     enabled: true,
                 };
@@ -782,7 +606,7 @@ impl AgentOs {
                     .show(ui, |ui| {
                         if let Some(kind) = self.page.kind() {
                             self.resources(ui, kind);
-                        } else if self.page == Page::Projects {
+                        } else if self.page == Page::Project {
                             self.projects(ui);
                         } else {
                             self.overview(ui);
@@ -816,7 +640,6 @@ impl eframe::App for AgentOs {
                 self.telemetry.report_save(result);
             }
             if let Some(kind) = self.telemetry.open_resource.take() {
-                self.scope = 2;
                 self.search.clear();
                 self.page = match kind {
                     Kind::Skill => Page::Skills,
@@ -825,7 +648,7 @@ impl eframe::App for AgentOs {
                 };
             }
             if std::mem::take(&mut self.telemetry.open_projects) {
-                self.page = Page::Projects;
+                self.page = Page::Project;
             }
             if std::mem::take(&mut self.telemetry.refresh_requested) {
                 self.ws.refresh();
@@ -836,7 +659,20 @@ impl eframe::App for AgentOs {
         self.mcp_tests.show(ctx);
     }
 }
-fn main() -> eframe::Result {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal()
+        && !std::io::stdout().is_terminal()
+        && !std::io::stderr().is_terminal()
+    {
+        return Err("Kozmos’u terminalde proje dizininden çalıştırın.".into());
+    }
+    if std::env::args_os().len() != 1 {
+        return Err(
+            "Kullanım: cd /proje/dizini && kozmos. Proje yolu argüman olarak verilmez.".into(),
+        );
+    }
+    let ws = Workspace::new(std::env::current_dir()?)?;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Kozmos")
@@ -849,6 +685,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Kozmos",
         options,
-        Box::new(|cc| Ok(Box::new(AgentOs::new(&cc.egui_ctx)))),
-    )
+        Box::new(move |cc| Ok(Box::new(AgentOs::new(&cc.egui_ctx, ws)))),
+    )?;
+    Ok(())
 }

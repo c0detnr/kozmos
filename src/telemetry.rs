@@ -353,9 +353,10 @@ impl Kozmos {
         };
     }
     fn export(&mut self) {
-        let base = std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
+        let Some(base) = self.project.path.as_ref() else {
+            self.status = "Çalışma dizini bulunamadı.".into();
+            return;
+        };
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -365,7 +366,9 @@ impl Kozmos {
         for (i, (cpu, mem)) in self.data.history.iter().enumerate() {
             csv.push_str(&format!("{i},{cpu:.2},{mem:.2}\n"));
         }
-        self.status = match fs::write(&path, csv) {
+        self.status = match crate::workspace::check_path(base, &path)
+            .and_then(|()| fs::write(&path, csv).map_err(|e| e.to_string()))
+        {
             Ok(()) => format!("Kaydedildi: {}", path.display()),
             Err(e) => format!("Kayıt hatası: {e}"),
         };
@@ -564,7 +567,7 @@ impl Kozmos {
     fn project_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("Aktif proje").size(20.0).color(WHITE));
-            if ui.small_button("Proje değiştir").clicked() {
+            if ui.small_button("Proje bilgileri").clicked() {
                 self.open_projects = true;
             }
             if ui.small_button("Yenile").clicked() {
@@ -659,14 +662,6 @@ impl Kozmos {
                 .size(12.0),
             );
         });
-        ui.label(
-            egui::RichText::new(format!(
-                "Global envanter: {} kaynak · Yukarıdaki sayılara dahil değil",
-                self.project.global_count
-            ))
-            .size(11.0)
-            .color(MUTED),
-        );
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("ODAK").size(10.0).color(MUTED));
             let seconds = self.focus_remaining.ceil() as u32;
@@ -982,7 +977,7 @@ mod interaction_tests {
     #[test]
     fn project_summary_excludes_global_resources_and_resets_editor_on_switch() {
         let temp = tempfile::tempdir().unwrap();
-        let mut ws = Workspace::new(temp.path().join("home"), temp.path().join("state.json"));
+        let mut ws = Workspace::new(temp.path().to_path_buf()).unwrap();
         ws.settings.active = Some(temp.path().join("project-a"));
         for (kind, global, enabled) in [
             (Kind::Skill, false, true),

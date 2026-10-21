@@ -43,7 +43,10 @@ impl Panel {
         self.open = true;
         self.rows.clear();
         self.error = None;
-        match workspace::read_document(path).and_then(|raw| mcp::servers(path, &raw, cwd)) {
+        match workspace::check_path(cwd, path)
+            .and_then(|()| workspace::read_document(path))
+            .and_then(|raw| mcp::servers(path, &raw, cwd))
+        {
             Ok(servers) => {
                 self.rows = servers
                     .into_iter()

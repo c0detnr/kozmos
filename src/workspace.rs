@@ -42,11 +42,11 @@ pub struct Settings {
     pub project_names: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub sources: Vec<Source>,
-    pub projects: Vec<PathBuf>,
+    #[serde(skip)]
     pub active: Option<PathBuf>,
 }
 pub struct Workspace {
-    pub home: PathBuf,
+    root: PathBuf,
     pub settings: Settings,
     pub resources: Vec<Resource>,
     pub warnings: Vec<String>,
@@ -54,7 +54,15 @@ pub struct Workspace {
     state_original: Option<String>,
 }
 impl Workspace {
-    pub fn new(home: PathBuf, state_path: PathBuf) -> Self {
+    pub fn new(root: PathBuf) -> Result<Self, String> {
+        let root = root
+            .canonicalize()
+            .map_err(|e| format!("Çalışma dizini okunamadı: {e}"))?;
+        if !root.is_dir() {
+            return Err("Çalışma dizini bir klasör olmalı.".into());
+        }
+        let state_path = root.join(".kozmos/workspace.json");
+        check_path(&root, &state_path)?;
         let mut warnings = Vec::new();
         let raw = match fs::read_to_string(&state_path) {
             Ok(s) => Some(s),
@@ -64,7 +72,7 @@ impl Workspace {
                 None
             }
         };
-        let settings = raw
+        let mut settings: Settings = raw
             .as_deref()
             .map(serde_json::from_str)
             .transpose()
@@ -73,8 +81,9 @@ impl Workspace {
                 Some(Settings::default())
             })
             .unwrap_or_default();
+        settings.active = Some(root.clone());
         let mut ws = Self {
-            home,
+            root,
             settings,
             resources: vec![],
             warnings,
@@ -82,42 +91,35 @@ impl Workspace {
             state_original: raw,
         };
         ws.refresh();
-        ws
+        Ok(ws)
+    }
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+    pub fn check_path(&self, path: &Path) -> Result<(), String> {
+        check_path(&self.root, path)
     }
     pub fn save_settings(&mut self) -> Result<(), String> {
+        self.check_path(&self.state_path)?;
         let raw = serde_json::to_string_pretty(&self.settings).map_err(|e| e.to_string())?;
         save_file(&self.state_path, self.state_original.as_deref(), &raw, None)?;
         self.state_original = Some(raw);
         Ok(())
     }
-    pub fn add_project(&mut self, path: &str) -> Result<(), String> {
-        let path = expand_path(path, &self.home)
-            .canonicalize()
-            .map_err(|e| format!("Proje bulunamadı: {e}"))?;
-        if !path.is_dir() {
-            return Err("Bir proje klasörü seçin.".into());
-        }
-        let previous = self.settings.clone();
-        self.settings.projects.retain(|project| project != &path);
-        self.settings.projects.insert(0, path.clone());
-        self.settings.active = Some(path);
-        if let Err(error) = self.save_settings() {
-            self.settings = previous;
-            return Err(error);
-        }
-        self.refresh();
-        Ok(())
-    }
     pub fn add_source(&mut self, raw: &str, kind: Kind) -> Result<(), String> {
-        let path = expand_path(raw, &self.home)
+        let path = self
+            .root
+            .join(raw.trim())
             .canonicalize()
             .map_err(|e| e.to_string())?;
+        self.check_path(&path)?;
         if kind == Kind::Mcp {
             if !path.is_file() {
                 return Err("MCP için bir JSON veya TOML dosyası seçin.".into());
             }
             mcp_names(&path, &read_document(&path)?)?;
         }
+        let previous = self.settings.clone();
         if !self
             .settings
             .sources
@@ -126,7 +128,10 @@ impl Workspace {
         {
             self.settings.sources.push(Source { path, kind });
         }
-        self.save_settings()?;
+        if let Err(error) = self.save_settings() {
+            self.settings = previous;
+            return Err(error);
+        }
         self.refresh();
         Ok(())
     }
@@ -134,44 +139,8 @@ impl Workspace {
         self.resources.clear();
         // Keep registry errors visible while rebuilding filesystem warnings.
         self.warnings.retain(|w| w.starts_with("Proje kaydı"));
-        let mut visited = HashSet::new();
-        for (root, provider) in [
-            (".agents/skills", "Agents"),
-            (".codex/skills", "Codex"),
-            (".claude/skills", "Claude"),
-            (".codex/plugins/cache", "Codex plugin"),
-            (".claude/plugins/cache", "Claude plugin"),
-        ] {
-            self.walk(
-                &self.home.join(root),
-                Kind::Skill,
-                true,
-                provider,
-                0,
-                &mut visited,
-            );
-        }
-        for root in [
-            ".agents/AGENTS.md",
-            ".codex/AGENTS.md",
-            "AGENTS.md",
-            ".claude/CLAUDE.md",
-        ] {
-            self.add_file(self.home.join(root), Kind::Instructions, true, "Global");
-        }
-        for (path, provider) in [
-            (".codex/config.toml", "Codex"),
-            (".claude.json", "Claude Code"),
-            (
-                ".config/Claude/claude_desktop_config.json",
-                "Claude Desktop",
-            ),
-            (".cursor/mcp.json", "Cursor"),
-            (".config/opencode/opencode.json", "OpenCode"),
-        ] {
-            self.add_file(self.home.join(path), Kind::Mcp, true, provider);
-        }
-        if let Some(project) = self.settings.active.clone() {
+        {
+            let project = self.root.clone();
             let mut visited = HashSet::new();
             for (root, provider) in [
                 (".agents/skills", "Agents"),
@@ -212,26 +181,22 @@ impl Workspace {
                 self.add_file(project.join(path), Kind::Mcp, false, provider);
             }
         }
-        self.walk(
-            &self.home.join(".agents"),
-            Kind::Instructions,
-            true,
-            "Agents",
-            0,
-            &mut HashSet::new(),
-        );
         for source in self.settings.sources.clone() {
+            if let Err(error) = self.check_path(&source.path) {
+                self.warnings.push(error);
+                continue;
+            }
             if source.path.is_dir() {
                 self.walk(
                     &source.path,
                     source.kind,
-                    true,
+                    false,
                     "Özel kaynak",
                     0,
                     &mut HashSet::new(),
                 );
             } else {
-                self.add_file(source.path, source.kind, true, "Özel kaynak");
+                self.add_file(source.path, source.kind, false, "Özel kaynak");
             }
         }
         self.resources.sort_by_key(|a| a.name.to_lowercase());
@@ -245,6 +210,10 @@ impl Workspace {
         depth: usize,
         visited: &mut HashSet<PathBuf>,
     ) {
+        if let Err(error) = self.check_path(path) {
+            self.warnings.push(error);
+            return;
+        }
         if depth > 10 {
             self.warnings
                 .push(format!("Tarama derinliği aşıldı: {}", path.display()));
@@ -282,6 +251,10 @@ impl Workspace {
         }
     }
     fn add_file(&mut self, path: PathBuf, kind: Kind, global: bool, provider: &str) {
+        if let Err(error) = self.check_path(&path) {
+            self.warnings.push(error);
+            return;
+        }
         if !path.is_file() || self.resources.iter().any(|r| r.path == path) {
             return;
         }
@@ -343,15 +316,11 @@ impl Workspace {
         name: &str,
         provider: &str,
     ) -> Result<PathBuf, String> {
-        let root = if global {
-            self.home.clone()
-        } else {
-            self.settings
-                .active
-                .clone()
-                .ok_or("Önce bir proje ekleyin.")?
-        };
-        match kind {
+        if global {
+            return Err("Kaynaklar yalnızca çalışma dizininde oluşturulabilir.".into());
+        }
+        let root = &self.root;
+        let target = match kind {
             Kind::Skill => {
                 if name.is_empty()
                     || !name
@@ -360,29 +329,47 @@ impl Workspace {
                 {
                     return Err("Skill adı yalnızca harf, rakam, - ve _ içerebilir.".into());
                 }
-                Ok(root.join(".agents/skills").join(name).join("SKILL.md"))
+                root.join(".agents/skills").join(name).join("SKILL.md")
             }
-            Kind::Instructions => Ok(root.join(if global {
-                ".agents/AGENTS.md"
-            } else {
-                "AGENTS.md"
-            })),
-            Kind::Mcp => Ok(root.join(match (provider, global) {
-                ("Codex", _) => ".codex/config.toml",
-                ("Cursor", _) => ".cursor/mcp.json",
-                ("Claude", true) => ".config/Claude/claude_desktop_config.json",
+            Kind::Instructions => root.join("AGENTS.md"),
+            Kind::Mcp => root.join(match provider {
+                "Codex" => ".codex/config.toml",
+                "Cursor" => ".cursor/mcp.json",
                 _ => ".mcp.json",
-            })),
-        }
+            }),
+        };
+        self.check_path(&target)?;
+        Ok(target)
     }
 }
-pub fn expand_path(raw: &str, home: &Path) -> PathBuf {
-    if raw.trim() == "~" {
-        home.into()
-    } else if let Some(rest) = raw.trim().strip_prefix("~/") {
-        home.join(rest)
-    } else {
-        PathBuf::from(raw.trim())
+
+// Resolve existing ancestors as well, so new files cannot escape through a linked directory.
+pub(crate) fn check_path(root: &Path, path: &Path) -> Result<(), String> {
+    if !path.is_absolute()
+        || !path.starts_with(root)
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(format!("Yol çalışma dizininin dışında: {}", path.display()));
+    }
+    let mut ancestor = path;
+    loop {
+        match fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                let resolved = ancestor.canonicalize().map_err(|e| e.to_string())?;
+                if !resolved.starts_with(root) {
+                    return Err(format!("Yol çalışma dizininin dışında: {}", path.display()));
+                }
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ancestor = ancestor
+                    .parent()
+                    .ok_or_else(|| "Geçersiz kaynak yolu.".to_string())?;
+            }
+            Err(error) => return Err(error.to_string()),
+        }
     }
 }
 pub fn read_document(path: &Path) -> Result<String, String> {
@@ -526,59 +513,6 @@ pub fn toggle_skill(resource: &Resource) -> Result<(), String> {
     }
     fs::rename(&resource.path, target).map_err(|e| e.to_string())
 }
-pub fn install_skill(resource: &Resource, project: &Path) -> Result<PathBuf, String> {
-    let source = resource.path.parent().ok_or("Skill klasörü bulunamadı")?;
-    let name = source.file_name().ok_or("Skill adı bulunamadı")?;
-    let root = project.join(".agents/skills");
-    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    let target = root.join(name);
-    if target.exists() {
-        return Err("Bu skill projede zaten var.".into());
-    }
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_nanos();
-    let staging = root.join(format!(".kozmos-install-{stamp}"));
-    let result = copy_tree(source, &staging, 0).and_then(|()| {
-        if !resource.enabled {
-            fs::rename(staging.join("SKILL.md.disabled"), staging.join("SKILL.md"))
-                .map_err(|e| e.to_string())?;
-        }
-        fs::rename(&staging, &target).map_err(|e| e.to_string())
-    });
-    if result.is_err() {
-        let _ = fs::remove_dir_all(&staging);
-    }
-    result?;
-    Ok(target)
-}
-fn copy_tree(source: &Path, target: &Path, depth: usize) -> Result<(), String> {
-    if depth > 20 {
-        return Err("Skill klasörü çok derin".into());
-    }
-    fs::create_dir(target).map_err(|e| e.to_string())?;
-    for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let ft = entry.file_type().map_err(|e| e.to_string())?;
-        if ft.is_symlink() {
-            return Err(format!(
-                "Paket içinde sembolik bağlantı var: {}",
-                entry.path().display()
-            ));
-        }
-        if entry.file_name().to_string_lossy().contains(".kozmos-") {
-            continue;
-        }
-        if ft.is_dir() {
-            copy_tree(&entry.path(), &target.join(entry.file_name()), depth + 1)?;
-        } else if ft.is_file() {
-            fs::copy(entry.path(), target.join(entry.file_name())).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,102 +522,105 @@ mod tests {
     }
     fn fixture() -> (tempfile::TempDir, Workspace) {
         let temp = tempfile::tempdir().unwrap();
-        let home = temp.path().join("home");
-        fs::create_dir(&home).unwrap();
-        let ws = Workspace::new(home, temp.path().join("state/workspaces.json"));
+        let root = temp.path().join("project");
+        fs::create_dir(&root).unwrap();
+        let ws = Workspace::new(root).unwrap();
         (temp, ws)
     }
     #[test]
-    fn recent_projects_reorder_without_duplicates_and_survive_restart() {
+    fn launch_root_overrides_stored_project_and_only_reads_local_resources() {
         let (temp, mut ws) = fixture();
-        let first = temp.path().join("first");
-        let second = temp.path().join("second");
-        fs::create_dir(&first).unwrap();
-        fs::create_dir(&second).unwrap();
-        ws.add_project(first.to_str().unwrap()).unwrap();
-        ws.add_project(second.to_str().unwrap()).unwrap();
-        ws.add_project(first.join(".").to_str().unwrap()).unwrap();
-        let loaded = Workspace::new(ws.home.clone(), ws.state_path.clone());
-        assert_eq!(loaded.settings.projects, vec![first.clone(), second]);
-        assert_eq!(loaded.settings.active, Some(first));
-    }
-
-    #[test]
-    fn failed_project_open_preserves_active_project_and_recent_order() {
-        let (temp, mut ws) = fixture();
-        let first = temp.path().join("first");
-        let second = temp.path().join("second");
-        fs::create_dir(&first).unwrap();
-        fs::create_dir(&second).unwrap();
-        ws.add_project(first.to_str().unwrap()).unwrap();
-        assert!(
-            ws.add_project(temp.path().join("missing").to_str().unwrap())
-                .is_err()
-        );
-        // Simulate a concurrent registry edit; failed persistence must not switch scope.
-        fs::write(&ws.state_path, "{}").unwrap();
-        assert!(ws.add_project(second.to_str().unwrap()).is_err());
-        assert_eq!(ws.settings.projects, vec![first.clone()]);
-        assert_eq!(ws.settings.active, Some(first));
-    }
-
-    #[test]
-    fn discovery_separates_scopes_and_finds_plugins_and_agent_files() {
-        let (temp, mut ws) = fixture();
+        let other = temp.path().join("other");
+        put(&other.join("AGENTS.md"), "# Other");
+        put(&ws.root.join("AGENTS.md"), "# Local");
         put(
-            &ws.home.join(".agents/skills/review/SKILL.md"),
-            "---\nname: review\ndescription: Review code\n---\n",
+            &ws.root.join(".agents/skills/demo/SKILL.md"),
+            "---\nname: demo\n---\n",
         );
         put(
-            &ws.home
-                .join(".codex/plugins/cache/provider/pkg/1/skills/demo/SKILL.md.disabled"),
-            "# Demo",
+            &ws.root.join(".cursor/mcp.json"),
+            r#"{"mcpServers":{"demo":{}}}"#,
         );
-        put(&ws.home.join(".agents/reviewer.md"), "# Reviewer");
         put(
-            &ws.home.join(".cursor/mcp.json"),
-            r#"{"mcpServers":{"filesystem":{"command":"example"}}}"#,
+            &ws.state_path,
+            &serde_json::json!({
+                "active": other, "projects": [other],
+                "sources": [{"path": other.join("AGENTS.md"), "kind": "Instructions"}]
+            })
+            .to_string(),
         );
-        let project = temp.path().join("project");
-        put(&project.join(".agents/skills/local/SKILL.md"), "# Local");
-        put(&project.join("AGENTS.md"), "# Rules");
-        ws.add_project(project.to_str().unwrap()).unwrap();
-        assert_eq!(
-            ws.resources
-                .iter()
-                .filter(|r| r.kind == Kind::Skill)
-                .count(),
-            3
-        );
+        ws = Workspace::new(ws.root.clone()).unwrap();
+        assert_eq!(ws.settings.active.as_ref(), Some(&ws.root));
+        assert_eq!(ws.resources.len(), 3);
         assert!(
             ws.resources
                 .iter()
-                .any(|r| r.name == "review" && r.global && r.description == "Review code")
+                .all(|r| !r.global && r.path.starts_with(&ws.root))
         );
-        assert!(
-            ws.resources
-                .iter()
-                .any(|r| r.kind == Kind::Skill && !r.enabled)
-        );
-        assert!(
-            ws.resources
-                .iter()
-                .any(|r| r.kind == Kind::Instructions && !r.global)
-        );
-        assert!(
-            ws.resources
-                .iter()
-                .any(|r| r.description.contains("filesystem"))
-        );
+        assert!(!ws.warnings.is_empty());
+        ws.refresh();
+        assert_eq!(ws.resources.len(), 3);
     }
     #[test]
-    fn discovery_handles_symlink_cycles() {
-        let (_temp, mut ws) = fixture();
-        let root = ws.home.join(".agents/skills");
+    fn discovery_blocks_external_symlinks_and_handles_internal_cycles() {
+        let (temp, mut ws) = fixture();
+        let root = ws.root.join(".agents/skills");
         put(&root.join("demo/SKILL.md"), "demo");
+        let external = temp.path().join("external");
+        put(&external.join("SKILL.md"), "outside");
         std::os::unix::fs::symlink(&root, root.join("demo/cycle")).unwrap();
+        std::os::unix::fs::symlink(&external, root.join("external")).unwrap();
+        std::os::unix::fs::symlink(external.join("SKILL.md"), ws.root.join("AGENTS.md")).unwrap();
         ws.refresh();
         assert_eq!(ws.resources.len(), 1);
+        assert!(!ws.warnings.is_empty());
+    }
+    #[test]
+    fn targets_and_custom_sources_stay_in_launch_directory() {
+        let (temp, mut ws) = fixture();
+        let outside = temp.path().join("outside.md");
+        put(&outside, "outside");
+        assert!(
+            ws.add_source(outside.to_str().unwrap(), Kind::Instructions)
+                .is_err()
+        );
+        assert!(ws.add_source("../outside.md", Kind::Instructions).is_err());
+        assert!(ws.target(Kind::Skill, true, "demo", "").is_err());
+        assert!(ws.target(Kind::Skill, false, "../escape", "").is_err());
+        std::os::unix::fs::symlink(temp.path(), ws.root.join(".codex")).unwrap();
+        assert!(ws.target(Kind::Mcp, false, "", "Codex").is_err());
+        assert!(ws.check_path(&ws.root.join(".codex/new/file.md")).is_err());
+        put(&ws.root.join("rules/custom.md"), "# Local rules");
+        ws.add_source("rules/custom.md", Kind::Instructions)
+            .unwrap();
+        ws.settings
+            .project_names
+            .insert("name".into(), "Demo".into());
+        ws.save_settings().unwrap();
+        let loaded = Workspace::new(ws.root.clone()).unwrap();
+        assert_eq!(loaded.settings.project_names.get("name").unwrap(), "Demo");
+        assert_eq!(loaded.resources.len(), 1);
+        assert_eq!(loaded.resources[0].provider, "Özel kaynak");
+        let other = temp.path().join("second");
+        fs::create_dir(&other).unwrap();
+        let second = Workspace::new(other.clone()).unwrap();
+        assert_eq!(second.root(), other);
+        assert!(second.settings.sources.is_empty());
+        assert!(second.settings.project_names.is_empty());
+    }
+    #[test]
+    fn settings_cannot_follow_external_symlink() {
+        let (temp, ws) = fixture();
+        std::os::unix::fs::symlink(temp.path(), ws.root.join(".kozmos")).unwrap();
+        assert!(Workspace::new(ws.root.clone()).is_err());
+    }
+    #[test]
+    fn rejects_missing_or_non_directory_root() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(Workspace::new(temp.path().join("missing")).is_err());
+        let file = temp.path().join("file");
+        put(&file, "file");
+        assert!(Workspace::new(file).is_err());
     }
     #[test]
     fn save_backs_up_bytes_preserves_permissions_and_rejects_stale_edits() {
@@ -732,66 +669,15 @@ mod tests {
         assert_eq!(fs::read_to_string(target).unwrap(), "new");
     }
     #[test]
-    fn skill_install_copies_resources_and_toggle_is_reversible() {
-        let (temp, mut ws) = fixture();
-        let source = ws.home.join(".agents/skills/demo");
-        put(&source.join("SKILL.md"), "---\nname: demo\n---\n");
-        put(&source.join("scripts/run.py"), "print('ok')");
+    fn local_skill_toggle_is_reversible() {
+        let (_temp, mut ws) = fixture();
+        let source = ws.root.join(".agents/skills/demo/SKILL.md");
+        put(&source, "demo");
         ws.refresh();
-        let resource = ws.resources[0].clone();
-        let project = temp.path().join("project");
-        let target = install_skill(&resource, &project).unwrap();
-        assert!(target.join("scripts/run.py").exists());
-        assert!(install_skill(&resource, &project).is_err());
-        toggle_skill(&resource).unwrap();
-        assert!(!resource.path.exists());
-        let mut disabled = resource;
-        disabled.enabled = false;
-        disabled.path = source.join("SKILL.md.disabled");
-        toggle_skill(&disabled).unwrap();
-        assert!(source.join("SKILL.md").exists());
-    }
-    #[test]
-    fn failed_install_rolls_back_instead_of_leaving_partial_package() {
-        let (temp, mut ws) = fixture();
-        let source = ws.home.join(".agents/skills/demo");
-        put(&source.join("SKILL.md"), "demo");
-        std::os::unix::fs::symlink("/tmp", source.join("outside")).unwrap();
+        toggle_skill(&ws.resources[0]).unwrap();
         ws.refresh();
-        let project = temp.path().join("project");
-        assert!(install_skill(&ws.resources[0], &project).is_err());
-        assert_eq!(
-            fs::read_dir(project.join(".agents/skills"))
-                .unwrap()
-                .count(),
-            0
-        );
-    }
-    #[test]
-    fn registry_custom_sources_and_project_switch_survive_restart() {
-        let (temp, mut ws) = fixture();
-        let project = temp.path().join("project");
-        fs::create_dir(&project).unwrap();
-        ws.add_project(project.to_str().unwrap()).unwrap();
-        let extra = temp.path().join("extra/custom.json");
-        put(&extra, r#"{"mcpServers":{"demo":{}}}"#);
-        ws.add_source(extra.to_str().unwrap(), Kind::Mcp).unwrap();
-        ws.settings
-            .project_names
-            .insert(project.to_string_lossy().into_owned(), "Mission".into());
-        ws.save_settings().unwrap();
-        let loaded = Workspace::new(ws.home.clone(), ws.state_path.clone());
-        assert_eq!(
-            loaded
-                .settings
-                .project_names
-                .get(&project.to_string_lossy().into_owned())
-                .map(String::as_str),
-            Some("Mission")
-        );
-        assert_eq!(loaded.settings.active, Some(project));
-        assert_eq!(loaded.settings.sources.len(), 1);
-        assert!(loaded.resources.iter().any(|r| r.provider == "Özel kaynak"));
-        assert!(ws.target(Kind::Skill, true, "../escape", "").is_err());
+        assert!(!ws.resources[0].enabled);
+        toggle_skill(&ws.resources[0]).unwrap();
+        assert!(source.exists());
     }
 }
