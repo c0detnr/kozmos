@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="480" viewBox="0 0 1600 480" fill="none">
+  <title>Kozmos</title>
+  <desc>Proje kaynakları ve sistem takibi için Rust masaüstü uygulaması.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="480" gradientUnits="userSpaceOnUse"><stop stop-color="#131d2b"/><stop offset="1" stop-color="#090e17"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#75eac5" stop-opacity=".13"/><stop offset="1" stop-color="#75eac5" stop-opacity="0"/></radialGradient>
+    <linearGradient id="planet" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#273e50"/><stop offset="1" stop-color="#101925"/></linearGradient>
+  </defs>
+  <rect width="1600" height="480" rx="24" fill="url(#bg)"/>
+  <rect x="1" y="1" width="1598" height="478" rx="23" stroke="#273141"/>
+  <circle cx="1240" cy="230" r="310" fill="url(#glow)"/>
+  <g fill="#8999b0" opacity=".55">
+    <circle cx="1000" cy="72" r="2"/><circle cx="1464" cy="110" r="2"/><circle cx="1378" cy="366" r="1.5"/><circle cx="976" cy="334" r="1.5"/><circle cx="1105" cy="406" r="2"/><circle cx="1480" cy="405" r="1"/><circle cx="1198" cy="56" r="1.5"/><circle cx="1510" cy="256" r="1.5"/><circle cx="1066" cy="151" r="1"/>
+  </g>
+  <g transform="translate(100 88) scale(2)" fill="#e4ebf5"><path d="M9 9H16V39H9Z"/><path d="M20 24 32 9H41L29 24 41 39H32Z"/></g>
+  <text x="214" y="157" fill="#e4ebf5" font-family="DejaVu Sans,Arial,sans-serif" font-size="68" font-weight="600" letter-spacing="-2">Kozmos</text>
+  <rect x="102" y="209" width="48" height="3" rx="1.5" fill="#75eac5"/>
+  <text x="100" y="266" fill="#e4ebf5" font-family="DejaVu Sans,Arial,sans-serif" font-size="29">Proje kaynakları ve sistem takibi</text>
+  <text x="100" y="313" fill="#8999b0" font-family="DejaVu Sans,Arial,sans-serif" font-size="20">Skill yönetimi · MCP bağlantıları · Agent talimatları</text>
+  <text x="100" y="409" fill="#75eac5" font-family="DejaVu Sans Mono,monospace" font-size="17">RUST / LINUX / MASAÜSTÜ</text>
+  <g transform="translate(1250 240)">
+    <ellipse rx="220" ry="114" transform="rotate(-28)" stroke="#75eac5" stroke-opacity=".25"/>
+    <ellipse rx="177" ry="82" transform="rotate(-28)" stroke="#75eac5" stroke-opacity=".15"/>
+    <circle r="89" fill="url(#planet)" stroke="#75eac5" stroke-opacity=".45"/>
+    <path d="M-67 30C-22 7 24 11 72-20" stroke="#75eac5" stroke-opacity=".12" stroke-width="16"/>
+    <circle cx="-188" cy="103" r="9" fill="#75eac5"/>
+    <circle cx="155" cy="-112" r="6" fill="#ad94ec"/>
+    <circle cx="-188" cy="103" r="18" fill="#75eac5" fill-opacity=".08"/>
+  </g>
+</svg>
